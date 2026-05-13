@@ -2,13 +2,16 @@
 <html><head>
 <meta charset="utf-8">
 <title>Cholon + Maven Admin</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@fortawesome/fontawesome-free@6.5.2/css/all.min.css">
 <style>
   body { font: 14px/1.5 -apple-system, Segoe UI, Helvetica, sans-serif; margin: 0; }
   .layout { display: flex; min-height: 100vh; }
   .sidebar { width: 200px; background: #1e293b; color: #f1f5f9; padding: 16px 0; }
   .sidebar h1 { margin: 0 16px 16px; font-size: 14px; color: #64748b; text-transform: uppercase; letter-spacing: 0.05em; }
   .sidebar a { display: block; padding: 8px 16px; color: #e2e8f0; text-decoration: none; }
+  .sidebar a i.fa-fw { margin-right: 8px; width: 18px; color: #94a3b8; }
   .sidebar a:hover, .sidebar a.active { background: #334155; }
+  .sidebar a.active i.fa-fw { color: #06b6d4; }
   .main { flex: 1; padding: 24px; background: #f8fafc; }
   h2 { margin: 0 0 16px; }
   .status { padding: 12px; border-radius: 4px; margin-bottom: 16px; }
@@ -29,12 +32,12 @@
 <div class="layout">
   <nav class="sidebar">
     <h1>Cholon + Maven Admin</h1>
-    <a href="#/" data-route="">🏠 Home</a>
-    <a href="#/targets" data-route="targets">🎯 Targets</a>
-    <a href="#/restaurants" data-route="restaurants">🏢 Restaurants</a>
-    <a href="#/sync" data-route="sync">🔄 Sync</a>
-    <a href="#/webhooks" data-route="webhooks">🪝 Webhooks</a>
-    <a href="#/employees" data-route="employees">👥 Employees</a>
+    <a href="#/" data-route=""><i class="fa-solid fa-house fa-fw"></i>Home</a>
+    <a href="#/targets" data-route="targets"><i class="fa-solid fa-bullseye fa-fw"></i>Targets</a>
+    <a href="#/restaurants" data-route="restaurants"><i class="fa-solid fa-utensils fa-fw"></i>Restaurants</a>
+    <a href="#/sync" data-route="sync"><i class="fa-solid fa-arrows-rotate fa-fw"></i>Sync</a>
+    <a href="#/webhooks" data-route="webhooks"><i class="fa-solid fa-plug fa-fw"></i>Webhooks</a>
+    <a href="#/employees" data-route="employees"><i class="fa-solid fa-users fa-fw"></i>Employees</a>
   </nav>
   <main class="main" id="main"><p>Loading…</p></main>
 </div>
