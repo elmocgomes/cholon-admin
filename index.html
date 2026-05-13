@@ -507,10 +507,56 @@
     const wrap = el("div", null, []);
     main.appendChild(wrap);
 
+    const DOW_NAMES = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+    function fmtPdLabel(p) {
+      const dow = (p.top_dow != null) ? DOW_NAMES[p.top_dow] : "?";
+      const hrs = (p.typical_start_hour != null && p.typical_end_hour != null)
+        ? p.typical_start_hour + "-" + p.typical_end_hour + "h"
+        : "";
+      const range = (p.first_shift || "").slice(0, 7) + " → " + (p.last_shift || "").slice(0, 7);
+      return "#" + p.planday_employee_id + " · " + p.shift_count + " shifts · " +
+             range + " · mostly " + dow + " " + hrs;
+    }
+
     async function load() {
       wrap.innerHTML = "";
       try {
-        const j = await apiGet("/api/employees?restaurant=" + encodeURIComponent(restSel.value));
+        const slug = restSel.value;
+        const [j, pdJ] = await Promise.all([
+          apiGet("/api/employees?restaurant=" + encodeURIComponent(slug)),
+          apiGet("/api/planday-employees?restaurant=" + encodeURIComponent(slug)),
+        ]);
+        const planday = pdJ.results || [];
+        const pdById = new Map(planday.map(p => [String(p.planday_employee_id), p]));
+        // Count how many Fresto rows reference each PlanDay id (for duplicate flagging)
+        const assignedCounts = new Map();
+        (j.results || []).forEach(e => {
+          if (e.planday_employee_id != null) {
+            const k = String(e.planday_employee_id);
+            assignedCounts.set(k, (assignedCounts.get(k) || 0) + 1);
+          }
+        });
+
+        // One shared <datalist> for the whole table — keeps the DOM small.
+        const datalistId = "planday-options";
+        const datalist = el("datalist", { id: datalistId }, []);
+        planday.forEach(p => {
+          const taken = assignedCounts.get(String(p.planday_employee_id));
+          const suffix = taken ? "  [taken]" : "";
+          datalist.appendChild(el("option", {
+            value: String(p.planday_employee_id),
+            label: fmtPdLabel(p) + suffix,
+          }));
+        });
+        wrap.appendChild(datalist);
+
+        const help = el("p", { style: "color:#64748b;font-size:12px;margin:0 0 12px" }, [
+          "Type a PlanDay employee ID, or click in the field and pick from the dropdown. ",
+          planday.length + " PlanDay employees with shifts at " + slug + ". ",
+          "Cross-reference IDs with PlanDay's web UI.",
+        ]);
+        wrap.appendChild(help);
+
         const table = el("table", null, [
           el("thead", null, el("tr", null, [
             el("th", null, "First Name"), el("th", null, "Last Name"),
@@ -520,15 +566,54 @@
         ]);
         const tbody = el("tbody", null, []);
         (j.results || []).forEach(emp => {
-          const pdIn = el("input", { type: "number", value: emp.planday_employee_id != null ? emp.planday_employee_id : "" });
+          const pdIn = el("input", {
+            type: "text",
+            inputmode: "numeric",
+            list: datalistId,
+            placeholder: "PlanDay ID",
+            value: emp.planday_employee_id != null ? String(emp.planday_employee_id) : "",
+            style: "width:120px",
+          });
+          const hint = el("span", { style: "color:#64748b;font-size:12px;margin-left:8px" }, "");
           const tick = el("span", { style: "color:#065f46;margin-left:6px;display:none" }, " ✓ saved");
-          pdIn.addEventListener("blur", async () => {
-            const v = pdIn.value === "" ? null : (parseInt(pdIn.value) || null);
+
+          function refreshHint() {
+            const v = pdIn.value.trim();
+            if (!v) { hint.textContent = ""; hint.style.color = "#64748b"; return; }
+            const p = pdById.get(v);
+            if (!p) { hint.textContent = " (no shifts at " + slug + ")"; hint.style.color = "#b45309"; return; }
+            hint.textContent = " " + fmtPdLabel(p);
+            hint.style.color = "#475569";
+            const dupCount = assignedCounts.get(v) || 0;
+            const dupWithOthers = dupCount > 1 || (dupCount === 1 && String(emp.planday_employee_id) !== v);
+            if (dupWithOthers) {
+              hint.textContent += "  ⚠ duplicate";
+              hint.style.color = "#b91c1c";
+            }
+          }
+          refreshHint();
+          pdIn.addEventListener("input", refreshHint);
+
+          pdIn.addEventListener("change", async () => {
+            const raw = pdIn.value.trim();
+            const v = raw === "" ? null : (parseInt(raw, 10) || null);
             tick.style.display = "none";
             try {
               await apiSend("PATCH", "/api/employees/" + encodeURIComponent(emp.id), { planday_employee_id: v });
               tick.style.display = "";
               setTimeout(() => { tick.style.display = "none"; }, 2000);
+              // Update local counts so the duplicate warning stays in sync.
+              const oldKey = emp.planday_employee_id != null ? String(emp.planday_employee_id) : null;
+              if (oldKey && assignedCounts.has(oldKey)) {
+                const n = assignedCounts.get(oldKey) - 1;
+                if (n <= 0) assignedCounts.delete(oldKey); else assignedCounts.set(oldKey, n);
+              }
+              if (v != null) {
+                const k = String(v);
+                assignedCounts.set(k, (assignedCounts.get(k) || 0) + 1);
+              }
+              emp.planday_employee_id = v;
+              refreshHint();
             } catch (e) {
               showStatus(main, "error", "Save failed: " + e.message);
             }
@@ -539,7 +624,7 @@
             el("td", null, emp.pos_name || ""),
             el("td", null, emp.role || ""),
             el("td", null, el("code", { style: "font-family:monospace;font-size:12px" }, emp.fresto_uid || "")),
-            el("td", null, [pdIn, tick]),
+            el("td", null, [pdIn, hint, tick]),
           ]));
         });
         table.appendChild(tbody);
