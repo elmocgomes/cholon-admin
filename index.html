@@ -604,7 +604,7 @@
     });
   }
   async function route() {
-    const r = (location.hash || "#/").replace("#/", "").replace(/^\\//, "");
+    const r = (location.hash || "#/").replace("#/", "").replace(/^\//, "");
     setActive(r);
     if (r === "targets") return renderTargets();
     if (r === "restaurants") return renderRestaurants();
