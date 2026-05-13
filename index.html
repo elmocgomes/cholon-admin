@@ -1,0 +1,619 @@
+<!doctype html>
+<html><head>
+<meta charset="utf-8">
+<title>Cholon + Maven Admin</title>
+<style>
+  body { font: 14px/1.5 -apple-system, Segoe UI, Helvetica, sans-serif; margin: 0; }
+  .layout { display: flex; min-height: 100vh; }
+  .sidebar { width: 200px; background: #1e293b; color: #f1f5f9; padding: 16px 0; }
+  .sidebar h1 { margin: 0 16px 16px; font-size: 14px; color: #64748b; text-transform: uppercase; letter-spacing: 0.05em; }
+  .sidebar a { display: block; padding: 8px 16px; color: #e2e8f0; text-decoration: none; }
+  .sidebar a:hover, .sidebar a.active { background: #334155; }
+  .main { flex: 1; padding: 24px; background: #f8fafc; }
+  h2 { margin: 0 0 16px; }
+  .status { padding: 12px; border-radius: 4px; margin-bottom: 16px; }
+  .status.ok { background: #d1fae5; color: #065f46; }
+  .status.error { background: #fee2e2; color: #991b1b; }
+  table { width: 100%; border-collapse: collapse; background: #fff; }
+  th, td { padding: 8px 12px; text-align: left; border-bottom: 1px solid #e2e8f0; }
+  input[type="number"], input[type="text"], input[type="date"], select {
+    padding: 6px 10px; border: 1px solid #cbd5e1; border-radius: 4px;
+  }
+  button { padding: 8px 16px; background: #06b6d4; color: white; border: 0; border-radius: 4px; cursor: pointer; }
+  button:hover { background: #0891b2; }
+  .toolbar { display: flex; gap: 12px; align-items: end; margin-bottom: 16px; }
+  .toolbar label { display: flex; flex-direction: column; font-size: 12px; color: #475569; }
+  .savebar { position: sticky; bottom: 0; background: #fff; padding: 12px; border-top: 1px solid #e2e8f0; }
+</style>
+</head><body>
+<div class="layout">
+  <nav class="sidebar">
+    <h1>Cholon + Maven Admin</h1>
+    <a href="#/" data-route="">🏠 Home</a>
+    <a href="#/targets" data-route="targets">🎯 Targets</a>
+    <a href="#/restaurants" data-route="restaurants">🏢 Restaurants</a>
+    <a href="#/sync" data-route="sync">🔄 Sync</a>
+    <a href="#/webhooks" data-route="webhooks">🪝 Webhooks</a>
+    <a href="#/employees" data-route="employees">👥 Employees</a>
+  </nav>
+  <main class="main" id="main"><p>Loading…</p></main>
+</div>
+<script>
+  // Static HTML on GitHub Pages; API on Supabase Edge Function.
+  const API_BASE = "https://ybpadmmooftyptagvnje.supabase.co/functions/v1/admin-portal";
+  const TOKEN = new URLSearchParams(location.search).get("token") || "";
+  const QT = "?token=" + encodeURIComponent(TOKEN);
+  const AT = "&token=" + encodeURIComponent(TOKEN);
+
+  function el(tag, attrs, children) {
+    const node = document.createElement(tag);
+    if (attrs) for (const k in attrs) {
+      if (k === "class") node.className = attrs[k];
+      else if (k === "style") node.style.cssText = attrs[k];
+      else if (k.startsWith("on") && typeof attrs[k] === "function") node.addEventListener(k.slice(2), attrs[k]);
+      else if (attrs[k] !== null && attrs[k] !== undefined && attrs[k] !== false) node.setAttribute(k, attrs[k]);
+    }
+    if (children) {
+      const arr = Array.isArray(children) ? children : [children];
+      for (const c of arr) {
+        if (c === null || c === undefined || c === false) continue;
+        node.appendChild(typeof c === "string" || typeof c === "number" ? document.createTextNode(String(c)) : c);
+      }
+    }
+    return node;
+  }
+
+  function showStatus(parent, kind, msg) {
+    const existing = parent.querySelector(".status");
+    if (existing) existing.remove();
+    const h2 = parent.querySelector("h2");
+    const node = el("div", { class: "status " + kind }, msg);
+    if (h2 && h2.nextSibling) parent.insertBefore(node, h2.nextSibling);
+    else parent.appendChild(node);
+    return node;
+  }
+
+  function fmtDate(d) {
+    const y = d.getFullYear();
+    const m = String(d.getMonth() + 1).padStart(2, "0");
+    const day = String(d.getDate()).padStart(2, "0");
+    return y + "-" + m + "-" + day;
+  }
+
+  function parseDate(s) {
+    const parts = s.split("-").map(Number);
+    return new Date(parts[0], parts[1] - 1, parts[2]);
+  }
+
+  function daysBetween(from, to) {
+    const out = [];
+    const a = parseDate(from);
+    const b = parseDate(to);
+    for (let d = new Date(a); d <= b; d.setDate(d.getDate() + 1)) {
+      out.push(new Date(d));
+    }
+    return out;
+  }
+
+  const DOW = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+
+  function relativeTime(iso) {
+    if (!iso) return "never";
+    const then = new Date(iso).getTime();
+    const now = Date.now();
+    const diff = Math.max(0, Math.floor((now - then) / 1000));
+    if (diff < 60) return diff + " sec ago";
+    if (diff < 3600) return Math.floor(diff / 60) + " min ago";
+    if (diff < 86400) return Math.floor(diff / 3600) + " hr ago";
+    return Math.floor(diff / 86400) + " day ago";
+  }
+
+  function fmtTs(iso) {
+    if (!iso) return "";
+    return new Date(iso).toLocaleString();
+  }
+
+  async function apiGet(path) {
+    const sep = path.includes("?") ? AT : QT;
+    const res = await fetch(API_BASE + path + sep);
+    const j = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(j.error || ("HTTP " + res.status));
+    return j;
+  }
+
+  async function apiSend(method, path, body) {
+    const sep = path.includes("?") ? AT : QT;
+    const res = await fetch(API_BASE + path + sep, {
+      method,
+      headers: { "Content-Type": "application/json" },
+      body: body !== undefined ? JSON.stringify(body) : undefined,
+    });
+    const j = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(j.error || ("HTTP " + res.status));
+    return j;
+  }
+
+  // ============ TARGETS ============
+  async function renderTargets() {
+    const main = document.getElementById("main");
+    main.innerHTML = "";
+    main.appendChild(el("h2", null, "Targets"));
+
+    const restSel = el("select", null, [
+      el("option", { value: "cholon" }, "Cholon"),
+      el("option", { value: "maven" }, "Maven"),
+    ]);
+    const today = new Date();
+    const future = new Date(); future.setDate(future.getDate() + 30);
+    const fromIn = el("input", { type: "date", value: fmtDate(today) });
+    const toIn = el("input", { type: "date", value: fmtDate(future) });
+    const loadBtn = el("button", null, "Load");
+
+    const toolbar = el("div", { class: "toolbar" }, [
+      el("label", null, ["Restaurant", restSel]),
+      el("label", null, ["From", fromIn]),
+      el("label", null, ["To", toIn]),
+      loadBtn,
+    ]);
+    main.appendChild(toolbar);
+
+    const gridWrap = el("div", null, []);
+    main.appendChild(gridWrap);
+
+    const saveBar = el("div", { class: "savebar", style: "display:none" }, []);
+    const saveBtn = el("button", null, "Save (0)");
+    saveBar.appendChild(saveBtn);
+    main.appendChild(saveBar);
+
+    function recountDirty() {
+      const dirty = gridWrap.querySelectorAll('[data-dirty="1"]');
+      const rowIds = new Set();
+      dirty.forEach(d => rowIds.add(d.dataset.row));
+      saveBtn.textContent = "Save (" + rowIds.size + ")";
+      saveBar.style.display = rowIds.size > 0 ? "" : "none";
+    }
+
+    async function load() {
+      const slug = restSel.value;
+      const from = fromIn.value;
+      const to = toIn.value;
+      gridWrap.innerHTML = "";
+      saveBar.style.display = "none";
+      try {
+        const j = await apiGet("/api/targets?restaurant=" + encodeURIComponent(slug) + "&from=" + from + "&to=" + to);
+        const byDate = {};
+        for (const r of (j.results || [])) byDate[r.business_date] = r;
+        const table = el("table", null, [
+          el("thead", null, el("tr", null, [
+            el("th", null, "Date"), el("th", null, "Day"),
+            el("th", null, "Target revenue"), el("th", null, "Notes"),
+          ])),
+        ]);
+        const tbody = el("tbody", null, []);
+        const days = daysBetween(from, to);
+        days.forEach((d, i) => {
+          const ds = fmtDate(d);
+          const existing = byDate[ds] || { target_revenue: "", notes: "" };
+          const revVal = existing.target_revenue === "" || existing.target_revenue === null || existing.target_revenue === undefined ? "" : String(existing.target_revenue);
+          const noteVal = existing.notes || "";
+          const revIn = el("input", { type: "number", step: "0.01", min: "0", value: revVal, "data-row": String(i), "data-field": "target_revenue", "data-date": ds, "data-original": revVal });
+          const noteIn = el("input", { type: "text", value: noteVal, "data-row": String(i), "data-field": "notes", "data-date": ds, "data-original": noteVal });
+          const markDirty = (e) => {
+            const t = e.target;
+            if (t.value !== t.dataset.original) t.dataset.dirty = "1";
+            else delete t.dataset.dirty;
+            recountDirty();
+          };
+          revIn.addEventListener("input", markDirty);
+          noteIn.addEventListener("input", markDirty);
+          tbody.appendChild(el("tr", null, [
+            el("td", null, ds),
+            el("td", null, DOW[d.getDay()]),
+            el("td", null, revIn),
+            el("td", null, noteIn),
+          ]));
+        });
+        table.appendChild(tbody);
+        gridWrap.appendChild(table);
+        recountDirty();
+      } catch (e) {
+        showStatus(main, "error", "Load failed: " + e.message);
+      }
+    }
+
+    saveBtn.addEventListener("click", async () => {
+      const inputs = gridWrap.querySelectorAll("input");
+      const dirtyDates = new Set();
+      inputs.forEach(inp => { if (inp.dataset.dirty === "1") dirtyDates.add(inp.dataset.date); });
+      const targets = [];
+      dirtyDates.forEach(ds => {
+        const revInp = gridWrap.querySelector('input[data-field="target_revenue"][data-date="' + ds + '"]');
+        const noteInp = gridWrap.querySelector('input[data-field="notes"][data-date="' + ds + '"]');
+        const revVal = revInp ? revInp.value : "";
+        if (revVal === "") return; // skip blank revenue
+        const rev = parseFloat(revVal);
+        if (isNaN(rev) || rev < 0) return;
+        targets.push({
+          business_date: ds,
+          target_revenue: rev,
+          notes: noteInp ? noteInp.value : "",
+        });
+      });
+      if (targets.length === 0) {
+        showStatus(main, "error", "Nothing to save (blank revenue rows are skipped).");
+        return;
+      }
+      try {
+        const j = await apiSend("POST", "/api/targets", { restaurant_slug: restSel.value, targets });
+        showStatus(main, "ok", "Saved " + j.upserted + " row(s).");
+        await load();
+      } catch (e) {
+        showStatus(main, "error", "Save failed: " + e.message);
+      }
+    });
+
+    loadBtn.addEventListener("click", load);
+    load();
+  }
+
+  // ============ RESTAURANTS ============
+  async function renderRestaurants() {
+    const main = document.getElementById("main");
+    main.innerHTML = "";
+    main.appendChild(el("h2", null, "Restaurants"));
+
+    // TODO: + Add restaurant — endpoint POST /api/restaurants not yet implemented.
+    try {
+      const j = await apiGet("/api/restaurants");
+      const table = el("table", null, [
+        el("thead", null, el("tr", null, [
+          el("th", null, "Slug"), el("th", null, "Name"),
+          el("th", null, "Total Seats"), el("th", null, "Open Hours"),
+          el("th", null, "Active"), el("th", null, "Source POS"),
+        ])),
+      ]);
+      const tbody = el("tbody", null, []);
+      (j.results || []).forEach(r => {
+        const nameIn = el("input", { type: "text", value: r.name || "" });
+        const seatsIn = el("input", { type: "number", value: r.total_seats != null ? r.total_seats : "" });
+        const hoursIn = el("input", { type: "number", value: r.open_hours != null ? r.open_hours : "" });
+        const activeIn = el("input", { type: "checkbox" });
+        if (r.active) activeIn.checked = true;
+        const tickName = el("span", { style: "color:#065f46;margin-left:6px;display:none" }, " ✓ saved");
+        const tickSeats = el("span", { style: "color:#065f46;margin-left:6px;display:none" }, " ✓ saved");
+        const tickHours = el("span", { style: "color:#065f46;margin-left:6px;display:none" }, " ✓ saved");
+        const tickActive = el("span", { style: "color:#065f46;margin-left:6px;display:none" }, " ✓ saved");
+
+        const saveField = async (field, value, tick) => {
+          tick.style.display = "none";
+          try {
+            const patch = {};
+            patch[field] = value;
+            await apiSend("PATCH", "/api/restaurants/" + encodeURIComponent(r.slug), patch);
+            tick.style.display = "";
+            setTimeout(() => { tick.style.display = "none"; }, 2000);
+          } catch (e) {
+            showStatus(main, "error", r.slug + " " + field + " save failed: " + e.message);
+          }
+        };
+        nameIn.addEventListener("blur", () => saveField("name", nameIn.value, tickName));
+        seatsIn.addEventListener("blur", () => saveField("total_seats", parseInt(seatsIn.value) || null, tickSeats));
+        hoursIn.addEventListener("blur", () => saveField("open_hours", parseInt(hoursIn.value) || null, tickHours));
+        activeIn.addEventListener("change", () => saveField("active", activeIn.checked, tickActive));
+
+        tbody.appendChild(el("tr", null, [
+          el("td", null, el("code", null, r.slug)),
+          el("td", null, [nameIn, tickName]),
+          el("td", null, [seatsIn, tickSeats]),
+          el("td", null, [hoursIn, tickHours]),
+          el("td", null, [activeIn, tickActive]),
+          el("td", null, r.source_pos || ""),
+        ]));
+      });
+      table.appendChild(tbody);
+      main.appendChild(table);
+    } catch (e) {
+      showStatus(main, "error", "Load failed: " + e.message);
+    }
+  }
+
+  // ============ SYNC ============
+  async function renderSync() {
+    const main = document.getElementById("main");
+    main.innerHTML = "";
+    main.appendChild(el("h2", null, "Sync"));
+
+    const container = el("div", null, []);
+    main.appendChild(container);
+
+    async function load() {
+      container.innerHTML = "";
+      try {
+        const j = await apiGet("/api/sync/status");
+
+        // Last sync per restaurant
+        const lastWrap = el("div", { style: "margin-bottom:24px" }, [
+          el("h3", null, "Last sync per restaurant"),
+        ]);
+        const lastTable = el("table", null, [
+          el("thead", null, el("tr", null, [
+            el("th", null, "Restaurant"), el("th", null, "Last synced at"), el("th", null, "Age"),
+          ])),
+        ]);
+        const lastBody = el("tbody", null, []);
+        (j.last_sync_per_restaurant || []).forEach(r => {
+          lastBody.appendChild(el("tr", null, [
+            el("td", null, r.name || r.slug),
+            el("td", null, r.last_synced_at ? fmtTs(r.last_synced_at) : "—"),
+            el("td", null, relativeTime(r.last_synced_at)),
+          ]));
+        });
+        lastTable.appendChild(lastBody);
+        lastWrap.appendChild(lastTable);
+        container.appendChild(lastWrap);
+
+        // Cron + run
+        const cronWrap = el("div", { style: "margin-bottom:24px" }, [
+          el("h3", null, "Cron job"),
+        ]);
+        cronWrap.appendChild(el("p", null, "Schedule: " + (j.cron_schedule || "—") + " — Currently: " + (j.cron_active ? "ON" : "OFF")));
+        const toggleBtn = el("button", null, j.cron_active ? "Disable cron" : "Enable cron");
+        const runBtn = el("button", { style: "margin-left:8px" }, "Run sync now");
+        cronWrap.appendChild(toggleBtn);
+        cronWrap.appendChild(runBtn);
+        container.appendChild(cronWrap);
+
+        toggleBtn.addEventListener("click", async () => {
+          const enable = !j.cron_active;
+          try {
+            const path = enable ? "/api/sync/cron/enable" : "/api/sync/cron/disable";
+            const r = await apiSend("POST", path);
+            if (r.cron_active === !enable) {
+              showStatus(main, "error", "Couldn't toggle cron — RPC may not be set up.");
+            } else {
+              showStatus(main, "ok", "Cron is now " + (r.cron_active ? "ON" : "OFF"));
+            }
+            await load();
+          } catch (e) {
+            showStatus(main, "error", "Toggle failed: " + e.message);
+          }
+        });
+        runBtn.addEventListener("click", async () => {
+          try {
+            const r = await apiSend("POST", "/api/sync/run");
+            showStatus(main, "ok", "Sync started at " + fmtTs(r.started_at));
+          } catch (e) {
+            showStatus(main, "error", "Run failed: " + e.message);
+          }
+        });
+
+        // Recent events (last 50)
+        const evWrap = el("div", null, [
+          el("h3", null, "Recent webhook events"),
+        ]);
+        const evTable = el("table", null, [
+          el("thead", null, el("tr", null, [
+            el("th", null, "Action"), el("th", null, "Entity ID"),
+            el("th", null, "Received"), el("th", null, "Processed"), el("th", null, "Error"),
+          ])),
+        ]);
+        const evBody = el("tbody", null, []);
+        (j.recent_events || []).forEach(ev => {
+          evBody.appendChild(el("tr", null, [
+            el("td", null, ev.action || ""),
+            el("td", null, el("code", null, ev.entity_id || "")),
+            el("td", null, fmtTs(ev.received_at)),
+            el("td", null, fmtTs(ev.processed_at)),
+            el("td", { style: "color:#991b1b" }, ev.error || ""),
+          ]));
+        });
+        evTable.appendChild(evBody);
+        evWrap.appendChild(evTable);
+        container.appendChild(evWrap);
+      } catch (e) {
+        showStatus(main, "error", "Load failed: " + e.message);
+      }
+    }
+    load();
+  }
+
+  // ============ WEBHOOKS ============
+  async function renderWebhooks() {
+    const main = document.getElementById("main");
+    main.innerHTML = "";
+    main.appendChild(el("h2", null, "Webhooks"));
+
+    const container = el("div", null, []);
+    main.appendChild(container);
+
+    async function load() {
+      container.innerHTML = "";
+      try {
+        const j = await apiGet("/api/webhooks");
+        const table = el("table", null, [
+          el("thead", null, el("tr", null, [
+            el("th", null, "URL"), el("th", null, "Actions"),
+            el("th", null, "Enabled"), el("th", null, ""),
+          ])),
+        ]);
+        const tbody = el("tbody", null, []);
+        (j.results || []).forEach(w => {
+          const delBtn = el("button", null, "Delete");
+          delBtn.addEventListener("click", async () => {
+            if (!confirm("Delete webhook " + w.id + "?")) return;
+            try {
+              await apiSend("DELETE", "/api/webhooks/" + encodeURIComponent(w.id));
+              showStatus(main, "ok", "Deleted " + w.id);
+              await load();
+            } catch (e) {
+              showStatus(main, "error", "Delete failed: " + e.message);
+            }
+          });
+          tbody.appendChild(el("tr", null, [
+            el("td", null, el("code", null, w.url)),
+            el("td", null, (w.actions || []).join(", ")),
+            el("td", null, w.enabled ? "yes" : "no"),
+            el("td", null, delBtn),
+          ]));
+        });
+        table.appendChild(tbody);
+        container.appendChild(table);
+
+        // Register form
+        const defaultUrl = location.origin && TOKEN
+          ? location.origin + "/functions/v1/fresto-webhook?token=" + encodeURIComponent(TOKEN)
+          : "";
+        const regWrap = el("div", { class: "toolbar", style: "margin-top:16px" }, []);
+        const urlIn = el("input", { type: "text", value: defaultUrl, style: "width:480px" });
+        const regBtn = el("button", null, "Register missing actions");
+        regWrap.appendChild(el("label", null, ["Webhook URL", urlIn]));
+        regWrap.appendChild(regBtn);
+        container.appendChild(regWrap);
+        regBtn.addEventListener("click", async () => {
+          try {
+            const r = await apiSend("POST", "/api/webhooks/register", { url: urlIn.value });
+            if (r.registered && r.registered.length) {
+              showStatus(main, "ok", "Registered: " + r.registered.join(", "));
+            } else {
+              showStatus(main, "ok", "All actions already registered.");
+            }
+            await load();
+          } catch (e) {
+            showStatus(main, "error", "Register failed: " + e.message);
+          }
+        });
+      } catch (e) {
+        showStatus(main, "error", "Load failed: " + e.message);
+      }
+    }
+    load();
+  }
+
+  // ============ EMPLOYEES ============
+  async function renderEmployees() {
+    const main = document.getElementById("main");
+    main.innerHTML = "";
+    main.appendChild(el("h2", null, "Employees"));
+
+    const restSel = el("select", null, [
+      el("option", { value: "cholon" }, "Cholon"),
+      el("option", { value: "maven" }, "Maven"),
+    ]);
+    const loadBtn = el("button", null, "Load");
+    main.appendChild(el("div", { class: "toolbar" }, [
+      el("label", null, ["Restaurant", restSel]),
+      loadBtn,
+    ]));
+    const wrap = el("div", null, []);
+    main.appendChild(wrap);
+
+    async function load() {
+      wrap.innerHTML = "";
+      try {
+        const j = await apiGet("/api/employees?restaurant=" + encodeURIComponent(restSel.value));
+        const table = el("table", null, [
+          el("thead", null, el("tr", null, [
+            el("th", null, "First Name"), el("th", null, "Last Name"),
+            el("th", null, "POS Name"), el("th", null, "Role"),
+            el("th", null, "Fresto UID"), el("th", null, "PlanDay Employee ID"),
+          ])),
+        ]);
+        const tbody = el("tbody", null, []);
+        (j.results || []).forEach(emp => {
+          const pdIn = el("input", { type: "number", value: emp.planday_employee_id != null ? emp.planday_employee_id : "" });
+          const tick = el("span", { style: "color:#065f46;margin-left:6px;display:none" }, " ✓ saved");
+          pdIn.addEventListener("blur", async () => {
+            const v = pdIn.value === "" ? null : (parseInt(pdIn.value) || null);
+            tick.style.display = "none";
+            try {
+              await apiSend("PATCH", "/api/employees/" + encodeURIComponent(emp.id), { planday_employee_id: v });
+              tick.style.display = "";
+              setTimeout(() => { tick.style.display = "none"; }, 2000);
+            } catch (e) {
+              showStatus(main, "error", "Save failed: " + e.message);
+            }
+          });
+          tbody.appendChild(el("tr", null, [
+            el("td", null, emp.first_name || ""),
+            el("td", null, emp.last_name || ""),
+            el("td", null, emp.pos_name || ""),
+            el("td", null, emp.role || ""),
+            el("td", null, el("code", { style: "font-family:monospace;font-size:12px" }, emp.fresto_uid || "")),
+            el("td", null, [pdIn, tick]),
+          ]));
+        });
+        table.appendChild(tbody);
+        wrap.appendChild(table);
+      } catch (e) {
+        showStatus(main, "error", "Load failed: " + e.message);
+      }
+    }
+    loadBtn.addEventListener("click", load);
+    load();
+  }
+
+  // ============ HOME ============
+  async function renderHome() {
+    const main = document.getElementById("main");
+    main.innerHTML = "";
+    main.appendChild(el("h2", null, "Home"));
+    const DASH = "https://app.lightdash.cloud/projects/7ea17c75-0c19-49e1-98f1-43fd3ee46547/home";
+
+    try {
+      const j = await apiGet("/api/sync/status");
+
+      const cards = el("div", { style: "display:flex;gap:16px;flex-wrap:wrap;margin-bottom:24px" }, []);
+      (j.last_sync_per_restaurant || []).forEach(r => {
+        const card = el("div", { style: "background:#fff;padding:16px;border-radius:6px;border:1px solid #e2e8f0;min-width:240px" }, [
+          el("h3", { style: "margin:0 0 8px" }, r.name || r.slug),
+          el("p", { style: "margin:0 0 8px;color:#475569" }, "Last synced: " + relativeTime(r.last_synced_at)),
+          el("a", { href: DASH, target: "_blank", style: "color:#06b6d4;text-decoration:none" }, "Open the dashboard →"),
+        ]);
+        cards.appendChild(card);
+      });
+      main.appendChild(cards);
+
+      const evWrap = el("div", null, [el("h3", null, "Recent webhook events")]);
+      const evTable = el("table", null, [
+        el("thead", null, el("tr", null, [
+          el("th", null, "Action"), el("th", null, "Entity ID"),
+          el("th", null, "Received"), el("th", null, "Processed"), el("th", null, "Error"),
+        ])),
+      ]);
+      const evBody = el("tbody", null, []);
+      (j.recent_events || []).slice(0, 10).forEach(ev => {
+        evBody.appendChild(el("tr", null, [
+          el("td", null, ev.action || ""),
+          el("td", null, el("code", null, ev.entity_id || "")),
+          el("td", null, fmtTs(ev.received_at)),
+          el("td", null, fmtTs(ev.processed_at)),
+          el("td", { style: "color:#991b1b" }, ev.error || ""),
+        ]));
+      });
+      evTable.appendChild(evBody);
+      evWrap.appendChild(evTable);
+      main.appendChild(evWrap);
+    } catch (e) {
+      showStatus(main, "error", "Load failed: " + e.message);
+    }
+  }
+
+  function setActive(route) {
+    document.querySelectorAll(".sidebar a").forEach(a => {
+      a.classList.toggle("active", (a.dataset.route || "") === route);
+    });
+  }
+  async function route() {
+    const r = (location.hash || "#/").replace("#/", "").replace(/^\\//, "");
+    setActive(r);
+    if (r === "targets") return renderTargets();
+    if (r === "restaurants") return renderRestaurants();
+    if (r === "sync") return renderSync();
+    if (r === "webhooks") return renderWebhooks();
+    if (r === "employees") return renderEmployees();
+    return renderHome();
+  }
+  window.addEventListener("hashchange", route);
+  route();
+</script>
+</body></html>
